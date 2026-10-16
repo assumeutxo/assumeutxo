@@ -17,6 +17,7 @@ count from what the node printed, reads where your node's chainstate came from (
 | command | what |
 |---|---|
 | `assumeutxo attest --rpc <bitcoin.conf> --height <h>` | attest the UTXO set hash at a height from your node's own output |
+| `assumeutxo link --rpc <bitcoin.conf> --height <h>` | the same, but print a link to the sign page instead; sign in the browser with a NIP-07 extension, no key on disk |
 | `assumeutxo verify <file> [--rpc <bitcoin.conf>]` | check an attestation: signature, canonical statement, the rules, tags against content; with a node, that the block is on its chain |
 | `assumeutxo publish <file> [wss://relay …]` | send a signed attestation to relays |
 | `assumeutxo key [new] [--key <folder or file>]` | show, or make, the signing key's public side |
@@ -34,6 +35,17 @@ count from what the node printed, reads where your node's chainstate came from (
 - `--dry`: print the statement and sign nothing.
 
 The node must be unpruned to roll back, and the tool must run where the node can write the dump file.
+
+## Without a key on disk
+
+```
+npx assumeutxo link --rpc ~/.bitcoin/bitcoin.conf --height 965000
+```
+
+Same node work, nothing signed: it prints a link to the [sign page](https://play-grounds.github.io/assumeutxo/sign/) that carries
+what the node printed. Open it in a browser with a NIP-07 extension (Podkey, nos2x, Alby), check the statement the page shows,
+sign, download the event file, publish. The link holds the dump output, your node's chainstate and software, the file hash and
+any note; keep it to yourself if those are private. `link` takes the attest options except `--key`, `--out`, `--publish` and `--dry`.
 
 ## Then
 

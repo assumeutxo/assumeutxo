@@ -16,6 +16,7 @@ const sha256file = (p) => { const h = createHash('sha256'), fd = openSync(p, 'r'
 const HELP = `assumeutxo ${VERSION} · https://assumeutxo.com/ · NIP-332
 
   assumeutxo attest  --rpc <bitcoin.conf> --height <h> [options]   attest the UTXO set hash at a height from your node's own output
+  assumeutxo link    --rpc <bitcoin.conf> --height <h> [options]   the same, but print a link to the sign page instead: sign in the browser with a NIP-07 extension, no key on disk
   assumeutxo verify  <file> [--rpc <bitcoin.conf>]                 check an attestation: signature, statement, rules, tags; the block on the chain
   assumeutxo publish <file> [--relay wss://… …]                    send a signed attestation to relays
   assumeutxo key     [new] [--key <folder|file>]                   show (or make) the signing key's public side
@@ -30,11 +31,16 @@ attest options
   --dump <path>        write the snapshot file here and keep it (default: next to --out, deleted after hashing; a set is gigabytes)
   --publish            also send the event to the default relays
   --dry                print the statement, sign nothing
+  --datadir <dir>      the node's datadir, for the RPC cookie, when bitcoin.conf is not in it
+
+link takes the attest options except --key, --out, --publish and --dry; it signs nothing. The link carries what the node
+printed; the page shows the statement before you sign. Keep the link to yourself if the note or the dump path is private.
 
 Nothing is typed: the facts come from dumptxoutset (rolled back to the height), the chainstate from getchainstates, the
 implementation from getnetworkinfo. The key is never printed.`;
 
-async function attest() {
+const SIGN_PAGE = 'https://play-grounds.github.io/assumeutxo/sign/';
+async function gather() {
   const conf = arg('--rpc') || die('--rpc <bitcoin.conf> is required'); const height = Number(arg('--height')) || die('--height is required');
   const method = arg('--method', 'recomputed'); if (!['recomputed', 'loaded'].includes(method)) die('--method is recomputed or loaded');
   const note = arg('--note'); if (note && (note.length > 200 || /:\/\/|www\./i.test(note))) die('the note is at most 200 characters, no links');
@@ -57,6 +63,10 @@ async function attest() {
   // the build, when the source tree is given
   let build, commit, binarySha256; const src = arg('--source');
   if (src) { build = execFileSync('git', ['-C', src, 'describe', '--tags', '--always', '--dirty'], { encoding: 'utf8' }).trim(); if (build.endsWith('-dirty')) die('the source tree is dirty: the commit would not describe the binary'); commit = execFileSync('git', ['-C', src, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); for (const b of ['build/bin/bitcoind', 'build/src/bitcoind', 'src/bitcoind']) if (existsSync(`${src}/${b}`)) { binarySha256 = sha256file(`${src}/${b}`); break; } }
+  return { height, method, note, net, bc, cs, network, genesis, chainstate, validated, d, fileSha256, computedAt, build, commit, binarySha256 };
+}
+async function attest() {
+  const { height, method, note, net, network, genesis, chainstate, validated, d, fileSha256, computedAt, build, commit, binarySha256 } = await gather();
   const st = { v: STATEMENT, '@type': 'Attestation',
     subject: { network, genesis, height, blockHash: d.base_hash, txoutsetHash: d.txoutset_hash, hashType: 'hash_serialized_3', coins: d.coins_written, chainTxCount: d.nchaintx, fileSha256 },
     claim: { method, chainstate, validated, implementation: net.subversion, ...(build ? { build } : {}), ...(commit ? { commit } : {}), ...(binarySha256 ? { binarySha256 } : {}), computedAt, ...(note ? { note } : {}) } };
@@ -70,6 +80,16 @@ async function attest() {
   writeFileSync(file, JSON.stringify(ev, null, 2) + '\n');
   console.error(`signed by did:nostr:${pub} (${leadingZeroBits(pub)} bits of work) · event ${ev.id}\nwritten ${file}`);
   if (has('--publish')) await doPublish(ev, []);
+}
+async function link() {
+  const g = await gather(); const d = g.d; const q = new URLSearchParams();
+  q.set('network', g.network); q.set('height', String(g.height)); q.set('method', g.method); q.set('impl', g.net.subversion); q.set('computed', g.computedAt);
+  q.set('dump', JSON.stringify({ coins_written: d.coins_written, base_hash: d.base_hash, base_height: d.base_height, txoutset_hash: d.txoutset_hash, nchaintx: d.nchaintx }));
+  q.set('chainstates', JSON.stringify({ headers: g.cs.headers, chainstates: g.cs.chainstates.map((c) => ({ blocks: c.blocks, bestblockhash: c.bestblockhash, snapshot_blockhash: c.snapshot_blockhash ?? null, validated: !!c.validated })) }));
+  if (g.chainstate.startsWith('snapshot:')) q.set('snapheight', g.chainstate.slice(9));
+  q.set('filesha', g.fileSha256); if (g.note) q.set('note', g.note); if (g.build) q.set('build', g.build); if (g.commit) q.set('commit', g.commit); if (g.binarySha256) q.set('binsha', g.binarySha256);
+  console.log(`${SIGN_PAGE}?${q}`);
+  console.error('open the link in a browser with a NIP-07 extension: the page shows the statement; sign, download the file, publish. Nothing is signed here and no key is read.');
 }
 async function verify() {
   const file = argv[1] || die('verify <file>'); const ev = JSON.parse(readFileSync(file, 'utf8')); const fail = (m) => { console.log('FAIL: ' + m); process.exit(1); };
@@ -86,5 +106,5 @@ async function verify() {
 async function doPublish(ev, relays) { const rs = relays.length ? relays : DEFAULT_RELAYS; const res = await publish(ev, rs); for (const r of res) console.error(`${r.ok ? 'ok ' : 'no '} ${r.url}${r.ok ? '' : ' (' + r.why + ')'}`); console.log(`event ${ev.id} accepted by ${res.filter((r) => r.ok).length} of ${rs.length} relays`); }
 async function publishCmd() { const file = argv[1] || die('publish <file> [relays…]'); const ev = JSON.parse(readFileSync(file, 'utf8')); if (ev.kind !== KIND || !ev.sig) die('not a signed kind 3332 event'); const relays = argv.slice(2).filter((a) => a.startsWith('wss://')); await doPublish(ev, relays); }
 function key() { const { priv, from, created } = loadKey(arg('--key'), { create: argv[1] === 'new' }); const pub = publicKey(priv); console.log(`${created ? 'made ' : ''}key at ${from}\ndid:nostr:${pub}\n${leadingZeroBits(pub)} leading zero bits of work${leadingZeroBits(pub) < 8 ? ' (a mined key, e.g. with rana, starts with more to show)' : ''}`); }
-try { if (cmd === 'attest') await attest(); else if (cmd === 'verify') await verify(); else if (cmd === 'publish') await publishCmd(); else if (cmd === 'key') key(); else if (cmd === '--version' || cmd === '-v') console.log(VERSION); else console.log(HELP); } catch (e) { die(e.message); }
+try { if (cmd === 'attest') await attest(); else if (cmd === 'link') await link(); else if (cmd === 'verify') await verify(); else if (cmd === 'publish') await publishCmd(); else if (cmd === 'key') key(); else if (cmd === '--version' || cmd === '-v') console.log(VERSION); else console.log(HELP); } catch (e) { die(e.message); }
 process.exit(0);
