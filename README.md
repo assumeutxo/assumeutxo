@@ -49,3 +49,8 @@ implementation, build and commit as the node and its source report them, when it
 an attestation is never replaced; a correction is a new event.
 
 MIT.
+
+## Changes
+
+- 0.0.2: `verify` accepts a Dispute (kind 3331); a node still syncing may attest its exact tip; the snapshot file is hashed in a stream, so mainnet files past 2 GiB work.
+- 0.0.1: attest, verify, publish, key.

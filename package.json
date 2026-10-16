@@ -1,6 +1,6 @@
 {
   "name": "assumeutxo",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Attest, verify and publish assumeUTXO snapshot attestations (NIP-332) from your own node: the command-line companion to assumeutxo.com",
   "type": "module",
   "bin": { "assumeutxo": "bin/assumeutxo.mjs" },
