@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { makeRpc, CHAIN_NETWORK } from '../lib/rpc.mjs';
 import { publicKey, finalizeEvent, verifyEvent, leadingZeroBits, publish, DEFAULT_RELAYS } from '../lib/nostr.mjs';
 import { loadKey } from '../lib/key.mjs';
-import { STATEMENT, KIND, jcs, checkRules, tagsFor, tagsAgree } from '../lib/statement.mjs';
+import { STATEMENT, KIND, DISPUTE_KIND, jcs, checkRules, tagsFor, tagsAgree } from '../lib/statement.mjs';
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const CLIENT = ['client', 'assumeutxo', 'https://www.npmjs.com/package/assumeutxo', VERSION];
 const argv = process.argv.slice(2); const cmd = argv[0]; const has = (k) => argv.includes(k); const arg = (k, d) => { const i = argv.indexOf(k); return i > 0 && i + 1 < argv.length ? argv[i + 1] : d; };
@@ -72,14 +72,15 @@ async function attest() {
 }
 async function verify() {
   const file = argv[1] || die('verify <file>'); const ev = JSON.parse(readFileSync(file, 'utf8')); const fail = (m) => { console.log('FAIL: ' + m); process.exit(1); };
-  const { idOK, sigOK } = verifyEvent(ev); if (!idOK) fail('id does not match the event'); if (!sigOK) fail('signature invalid'); if (ev.kind !== KIND) fail(`kind is ${ev.kind}, not ${KIND}`);
+  const { idOK, sigOK } = verifyEvent(ev); if (!idOK) fail('id does not match the event'); if (!sigOK) fail('signature invalid'); if (![KIND, DISPUTE_KIND].includes(ev.kind)) fail(`kind is ${ev.kind}, not ${KIND} or ${DISPUTE_KIND}`);
   let st; try { st = JSON.parse(ev.content); } catch { fail('content is not JSON'); } if (jcs(st) !== ev.content) fail('content is not canonical (RFC 8785)');
   try { checkRules(st); } catch (e) { fail(e.message); } const dis = tagsAgree(ev, st); if (dis) fail(dis);
+  if ((st['@type'] === 'Dispute') !== (ev.kind === DISPUTE_KIND)) fail('a Dispute is kind 3331 and an Attestation is kind 3332');
   const s = st.subject, c = st.claim;
   if (arg('--rpc')) { const rpc = makeRpc(arg('--rpc'), arg('--datadir')); let h; try { h = await rpc('getblockheader', s.blockHash); } catch { fail(`block ${s.blockHash} is not known to this node`); }
     if (s.height !== undefined && h.height !== s.height) fail(`the block is at height ${h.height} on this node, not ${s.height}`); if (h.confirmations < 1) fail('the block is not on this node\'s best chain');
     const g = await rpc('getblockhash', 0); if (s.genesis !== undefined && g !== s.genesis) fail(`genesis differs from this node's: ${g}`); console.log(`on chain: ${s.blockHash.slice(0, 16)}… at ${h.height}, ${h.confirmations} confirmations`); }
-  console.log(`ok: ${s.network ?? '?'} ${s.height ?? '?'} ${s.txoutsetHash} ${c.method} by did:nostr:${ev.pubkey} (${leadingZeroBits(ev.pubkey)} bits; ${c.implementation ?? 'implementation not stated'}; ${c.chainstate}${c.computedAt ? '; computed ' + c.computedAt : ''})`);
+  console.log(`ok: ${st['@type'] === 'Dispute' ? 'DISPUTE of ' + st.disputes.txoutsetHash + ' (' + st.disputes.attestations.length + ' attestations), this node got ' : ''}${s.network ?? '?'} ${s.height ?? '?'} ${s.txoutsetHash} ${c.method} by did:nostr:${ev.pubkey} (${leadingZeroBits(ev.pubkey)} bits; ${c.implementation ?? 'implementation not stated'}; ${c.chainstate}${c.computedAt ? '; computed ' + c.computedAt : ''})`);
 }
 async function doPublish(ev, relays) { const rs = relays.length ? relays : DEFAULT_RELAYS; const res = await publish(ev, rs); for (const r of res) console.error(`${r.ok ? 'ok ' : 'no '} ${r.url}${r.ok ? '' : ' (' + r.why + ')'}`); console.log(`event ${ev.id} accepted by ${res.filter((r) => r.ok).length} of ${rs.length} relays`); }
 async function publishCmd() { const file = argv[1] || die('publish <file> [relays…]'); const ev = JSON.parse(readFileSync(file, 'utf8')); if (ev.kind !== KIND || !ev.sig) die('not a signed kind 3332 event'); const relays = argv.slice(2).filter((a) => a.startsWith('wss://')); await doPublish(ev, relays); }
