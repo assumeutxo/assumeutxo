@@ -43,8 +43,9 @@ async function attest() {
   const network = arg('--network', CHAIN_NETWORK[bc.chain]); if (!network) die(`the node is on chain "${bc.chain}": give --network`);
   const genesis = await rpc('getblockhash', 0);
   const active = cs.chainstates.at(-1); let chainstate = 'full'; if (active.snapshot_blockhash) chainstate = 'snapshot:' + (await rpc('getblockheader', active.snapshot_blockhash)).height; const validated = !!active.validated;
-  if (bc.initialblockdownload) die(`the node is still syncing (at ${bc.blocks} of ${bc.headers})`);
+  // a node still syncing may attest a height it has reached exactly: the set at that height is complete whether or not blocks above it exist yet
   if (height > bc.blocks) die(`the node is at ${bc.blocks}, below ${height}`);
+  if (bc.initialblockdownload && bc.blocks !== height) die(`the node is still syncing (at ${bc.blocks} of ${bc.headers}); while syncing it can attest only its exact tip`);
   // the facts: dumptxoutset rolled back to the height (the node writes the file; it must be able to write where --dump points)
   // the node writes the file where --dump says, else in --out (default: here); never in a temp filesystem, a set is gigabytes
   const keep = !!arg('--dump'); const dump = resolve(arg('--dump', `${arg('--out', '.')}/assumeutxo-${network}-${height}.dat`)); if (existsSync(dump)) die(`${dump} exists`);
