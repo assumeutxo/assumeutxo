@@ -1,14 +1,15 @@
 {
   "name": "assumeutxo",
   "version": "0.0.1",
-  "description": "Attest, verify and start from assumeUTXO snapshots: the command-line companion to assumeutxo.com",
+  "description": "Attest, verify and publish assumeUTXO snapshot attestations (NIP-332) from your own node: the command-line companion to assumeutxo.com",
   "type": "module",
   "bin": { "assumeutxo": "bin/assumeutxo.mjs" },
-  "files": ["bin", "README.md", "LICENSE"],
-  "keywords": ["bitcoin", "assumeutxo", "utxo", "snapshot", "attestation", "nostr"],
+  "files": ["bin", "lib", "README.md", "LICENSE"],
+  "keywords": ["bitcoin", "assumeutxo", "utxo", "snapshot", "attestation", "nostr", "nip-332"],
   "homepage": "https://assumeutxo.com/",
   "repository": { "type": "git", "url": "https://github.com/assumeutxo/assumeutxo.git" },
-  "bugs": { "url": "https://github.com/assumeutxo/assumeutxo.github.io/issues" },
+  "bugs": { "url": "https://github.com/assumeutxo/assumeutxo/issues" },
   "license": "MIT",
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=20" },
+  "dependencies": { "@noble/curves": "^1.6.0", "ws": "^8.18.0" }
 }
