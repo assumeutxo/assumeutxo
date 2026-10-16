@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // assumeutxo: attest, verify and publish assumeUTXO snapshot attestations (NIP-332) from your own node. https://assumeutxo.com/
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, statSync , openSync, readSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -12,7 +12,7 @@ const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 const CLIENT = ['client', 'assumeutxo', 'https://www.npmjs.com/package/assumeutxo', VERSION];
 const argv = process.argv.slice(2); const cmd = argv[0]; const has = (k) => argv.includes(k); const arg = (k, d) => { const i = argv.indexOf(k); return i > 0 && i + 1 < argv.length ? argv[i + 1] : d; };
 const die = (m) => { console.error('assumeutxo: ' + m); process.exit(1); };
-const sha256file = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
+const sha256file = (p) => { const h = createHash('sha256'), fd = openSync(p, 'r'), buf = Buffer.alloc(1 << 24); let n; while ((n = readSync(fd, buf)) > 0) h.update(buf.subarray(0, n)); closeSync(fd); return h.digest('hex'); }; // streamed: snapshots exceed the 2 GiB readFileSync cap
 const HELP = `assumeutxo ${VERSION} · https://assumeutxo.com/ · NIP-332
 
   assumeutxo attest  --rpc <bitcoin.conf> --height <h> [options]   attest the UTXO set hash at a height from your node's own output
