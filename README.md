@@ -18,13 +18,14 @@ count from what the node printed, reads where your node's chainstate came from (
 |---|---|
 | `assumeutxo attest --rpc <bitcoin.conf> --height <h>` | attest the UTXO set hash at a height from your node's own output |
 | `assumeutxo link --rpc <bitcoin.conf> --height <h>` | the same, but print a link to the sign page instead; sign in the browser with a NIP-07 extension, no key on disk |
-| `assumeutxo verify <file> [--rpc <bitcoin.conf>]` | check an attestation: signature, canonical statement, the rules, tags against content; with a node, that the block is on its chain |
+| `assumeutxo verify <file or folder> [--rpc <bitcoin.conf>]` | check an attestation: signature, canonical statement, the rules, tags against content; with a node, that the block is on its chain. A folder: every event under it, grouped by snapshot, and whether they agree (exits 1 on a failure or a disagreement) |
 | `assumeutxo publish <file> [wss://relay …]` | send a signed attestation to relays |
 | `assumeutxo key [new] [--key <folder or file>]` | show, or make, the signing key's public side |
 
 ## attest options
 
-- `--network <label>`: the record's label for the chain: `btc`, `tbtc3`, `tbtc4`, `signet`, `xbt`, `txbt4`. Default from the node's chain.
+- `--network <label>`: the record's label for the chain: `btc`, `tbtc3`, `tbtc4`, `tbtc5`, `signet`, `xbt`, `txbt4`. Default from the node's chain.
+- `--from <report.json>`: instead of `--rpc`, the dump as a node that is not Core reports it: dumptxoutset's fields plus `network`, `genesis`, `implementation`, `chainstate`, `validated`, `computed_at` and the `path` of the file it wrote, which is hashed again here. [bitcoin-kernel/testnet5](https://github.com/bitcoin-kernel/testnet5) writes one with `node src/utxo-hash.js --height <h> --dump <dir> --json`.
 - `--method recomputed|loaded`: `recomputed` (default) means this node built the set from blocks; `loaded` means it started from the snapshot and background validation finished. The tool refuses a claim the node's `getchainstates` does not support.
 - `--key <folder or file>`: a folder whose git config holds `nostr.privkey` (the `npm init agent` convention), or a file with a hex key. Default `~/.config/assumeutxo/key`, made on first use. Your own key is the best key; a key mined with leading zeros ([rana](https://github.com/grunch/rana)) starts with something to show.
 - `--source <dir>`: the tree the node was built from; adds the release tag, the commit and the binary's sha256 to the claim.
