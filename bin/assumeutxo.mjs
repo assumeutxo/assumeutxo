@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // assumeutxo: attest, verify and publish assumeUTXO snapshot attestations (NIP-332) from your own node. https://assumeutxo.com/
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, statSync , openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, statSync, openSync, readSync, closeSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
 import { makeRpc, CHAIN_NETWORK } from '../lib/rpc.mjs';
 import { publicKey, finalizeEvent, verifyEvent, leadingZeroBits, publish, DEFAULT_RELAYS } from '../lib/nostr.mjs';
 import { loadKey } from '../lib/key.mjs';
@@ -17,12 +17,14 @@ const HELP = `assumeutxo ${VERSION} · https://assumeutxo.com/ · NIP-332
 
   assumeutxo attest  --rpc <bitcoin.conf> --height <h> [options]   attest the UTXO set hash at a height from your node's own output
   assumeutxo link    --rpc <bitcoin.conf> --height <h> [options]   the same, but print a link to the sign page instead: sign in the browser with a NIP-07 extension, no key on disk
-  assumeutxo verify  <file> [--rpc <bitcoin.conf>]                 check an attestation: signature, statement, rules, tags; the block on the chain
+  assumeutxo verify  <file|folder> [--rpc <bitcoin.conf>]          check an attestation: signature, statement, rules, tags; the block on the chain.
+                                                                   A folder: every event under it, grouped by snapshot, and whether they agree
   assumeutxo publish <file> [--relay wss://… …]                    send a signed attestation to relays
   assumeutxo key     [new] [--key <folder|file>]                   show (or make) the signing key's public side
 
 attest options
-  --network <label>    the record's label for the chain (btc, tbtc3, tbtc4, signet, xbt, txbt4); default from the node's chain
+  --from <report.json> instead of --rpc: a node that is not Core reports the dump as JSON (bitcoin-kernel/testnet5: utxo-hash.js --dump <dir> --json)
+  --network <label>    the record's label for the chain (btc, tbtc3, tbtc4, tbtc5, signet, xbt, txbt4); default from the node's chain
   --method <m>         recomputed (default: this node built the set from blocks) or loaded (started from the snapshot, validated)
   --key <folder|file>  the signing key: a folder with git config nostr.privkey, or a hex file; default ~/.config/assumeutxo/key
   --source <dir>       the tree the node was built from: adds build, commit and the binary's sha256 to the claim
@@ -40,10 +42,33 @@ Nothing is typed: the facts come from dumptxoutset (rolled back to the height), 
 implementation from getnetworkinfo. The key is never printed.`;
 
 const SIGN_PAGE = 'https://play-grounds.github.io/assumeutxo/sign/';
+// A node that is not Core (bitcoin-kernel/testnet5's utxo-hash.js --dump <dir> --json) reports the same facts as one JSON file:
+// dumptxoutset's fields plus network, genesis, implementation, chainstate, validated, computed_at and the file it wrote.
+// The file is hashed again here; its sha256 is never taken from the report.
+function fromReport(file, height, method, note) {
+  let r; try { r = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { die(`${file}: ${e.message}`); }
+  if (Array.isArray(r)) { r = height ? r.find((x) => x.base_height === height) : r.length === 1 ? r[0] : undefined; if (!r) die(`${file} holds no report ${height ? 'for ' + height : 'alone: give --height'}`); }
+  height ||= r.base_height; if (r.base_height !== height) die(`${file} is for ${r.base_height}, not ${height}`);
+  for (const k of ['coins_written', 'base_hash', 'txoutset_hash', 'nchaintx', 'genesis', 'implementation', 'chainstate', 'validated', 'computed_at', 'path']) if (r[k] === undefined) die(`${file} lacks ${k}`);
+  if (method === 'loaded') die('a report from a node that built the set from genesis is recomputed, not loaded');
+  const network = arg('--network', r.network); if (!network) die(`${file} names no network: give --network`);
+  const dump = resolve(dirname(resolve(file)), r.path); if (!existsSync(dump)) die(`${dump}, the snapshot the report names, is not there`);
+  const fileSha256 = sha256file(dump); if (r.sha256 && r.sha256 !== fileSha256) die(`${dump} hashes to ${fileSha256}, not the report's ${r.sha256}`);
+  console.error(`${r.txoutset_hash} · ${r.coins_written} coins · from ${r.implementation} (${r.chainstate}, validated ${r.validated})`);
+  const d = { coins_written: r.coins_written, base_hash: r.base_hash, base_height: r.base_height, txoutset_hash: r.txoutset_hash, nchaintx: r.nchaintx };
+  const cs = { headers: r.base_height, chainstates: [{ blocks: r.base_height, bestblockhash: r.base_hash, snapshot_blockhash: r.chainstate.startsWith('snapshot:') ? 'given' : null, validated: !!r.validated }] };
+  return { height, method, note, net: { subversion: r.implementation }, cs, network, genesis: r.genesis, chainstate: r.chainstate, validated: !!r.validated, d, fileSha256, computedAt: r.computed_at, ...sourceBuild() };
+}
+function sourceBuild() { // the build, when the source tree is given
+  let build, commit, binarySha256; const src = arg('--source');
+  if (src) { build = execFileSync('git', ['-C', src, 'describe', '--tags', '--always', '--dirty'], { encoding: 'utf8' }).trim(); if (build.endsWith('-dirty')) die('the source tree is dirty: the commit would not describe the binary'); commit = execFileSync('git', ['-C', src, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); for (const b of ['build/bin/bitcoind', 'build/src/bitcoind', 'src/bitcoind']) if (existsSync(`${src}/${b}`)) { binarySha256 = sha256file(`${src}/${b}`); break; } }
+  return { build, commit, binarySha256 };
+}
 async function gather() {
-  const conf = arg('--rpc') || die('--rpc <bitcoin.conf> is required'); const height = Number(arg('--height')) || die('--height is required');
   const method = arg('--method', 'recomputed'); if (!['recomputed', 'loaded'].includes(method)) die('--method is recomputed or loaded');
   const note = arg('--note'); if (note && (note.length > 200 || /:\/\/|www\./i.test(note))) die('the note is at most 200 characters, no links');
+  if (arg('--from')) return fromReport(arg('--from'), Number(arg('--height')) || 0, method, note);
+  const conf = arg('--rpc') || die('--rpc <bitcoin.conf> or --from <report.json> is required'); const height = Number(arg('--height')) || die('--height is required');
   const rpc = makeRpc(conf, arg('--datadir'));
   const net = await rpc('getnetworkinfo'); const bc = await rpc('getblockchaininfo'); const cs = await rpc('getchainstates');
   const network = arg('--network', CHAIN_NETWORK[bc.chain]); if (!network) die(`the node is on chain "${bc.chain}": give --network`);
@@ -60,10 +85,7 @@ async function gather() {
   if (d.base_height !== height) die(`the dump is for ${d.base_height}, not ${height}`);
   const fileSha256 = sha256file(dump); const computedAt = new Date(statSync(dump).mtime).toISOString().slice(0, 19) + 'Z'; if (!keep) unlinkSync(dump);
   console.error(`${d.txoutset_hash} · ${d.coins_written} coins · ${secs} s${keep ? ' · kept ' + dump : ''}`);
-  // the build, when the source tree is given
-  let build, commit, binarySha256; const src = arg('--source');
-  if (src) { build = execFileSync('git', ['-C', src, 'describe', '--tags', '--always', '--dirty'], { encoding: 'utf8' }).trim(); if (build.endsWith('-dirty')) die('the source tree is dirty: the commit would not describe the binary'); commit = execFileSync('git', ['-C', src, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); for (const b of ['build/bin/bitcoind', 'build/src/bitcoind', 'src/bitcoind']) if (existsSync(`${src}/${b}`)) { binarySha256 = sha256file(`${src}/${b}`); break; } }
-  return { height, method, note, net, bc, cs, network, genesis, chainstate, validated, d, fileSha256, computedAt, build, commit, binarySha256 };
+  return { height, method, note, net, bc, cs, network, genesis, chainstate, validated, d, fileSha256, computedAt, ...sourceBuild() };
 }
 async function attest() {
   const { height, method, note, net, network, genesis, chainstate, validated, d, fileSha256, computedAt, build, commit, binarySha256 } = await gather();
@@ -91,17 +113,47 @@ async function link() {
   console.log(`${SIGN_PAGE}?${q}`);
   console.error('open the link in a browser with a NIP-07 extension: the page shows the statement; sign, download the file, publish. Nothing is signed here and no key is read.');
 }
+// One event: -> { ok, why } or { ok, st, ev, chain, line }. Never exits, so a folder can be checked whole.
+async function checkEvent(ev, rpc) {
+  const no = (why) => ({ ok: false, why, ev });
+  const { idOK, sigOK } = verifyEvent(ev); if (!idOK) return no('id does not match the event'); if (!sigOK) return no('signature invalid'); if (![KIND, DISPUTE_KIND].includes(ev.kind)) return no(`kind is ${ev.kind}, not ${KIND} or ${DISPUTE_KIND}`);
+  let st; try { st = JSON.parse(ev.content); } catch { return no('content is not JSON'); } if (jcs(st) !== ev.content) return no('content is not canonical (RFC 8785)');
+  try { checkRules(st); } catch (e) { return no(e.message); } const dis = tagsAgree(ev, st); if (dis) return no(dis);
+  if ((st['@type'] === 'Dispute') !== (ev.kind === DISPUTE_KIND)) return no('a Dispute is kind 3331 and an Attestation is kind 3332');
+  const s = st.subject, c = st.claim; let chain;
+  if (rpc) { let h; try { h = await rpc('getblockheader', s.blockHash); } catch { return no(`block ${s.blockHash} is not known to this node`); }
+    if (s.height !== undefined && h.height !== s.height) return no(`the block is at height ${h.height} on this node, not ${s.height}`); if (h.confirmations < 1) return no('the block is not on this node\'s best chain');
+    const g = await rpc('getblockhash', 0); if (s.genesis !== undefined && g !== s.genesis) return no(`genesis differs from this node's: ${g}`); chain = `on chain: ${s.blockHash.slice(0, 16)}… at ${h.height}, ${h.confirmations} confirmations`; }
+  const line = `${st['@type'] === 'Dispute' ? 'DISPUTE of ' + st.disputes.txoutsetHash + ' (' + st.disputes.attestations.length + ' attestations), this node got ' : ''}${s.network ?? '?'} ${s.height ?? '?'} ${s.txoutsetHash} ${c.method} by did:nostr:${ev.pubkey} (${leadingZeroBits(ev.pubkey)} bits; ${c.implementation ?? 'implementation not stated'}; ${c.chainstate}${c.computedAt ? '; computed ' + c.computedAt : ''})`;
+  return { ok: true, st, ev, chain, line };
+}
+const eventFiles = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((d) => d.isDirectory() ? eventFiles(`${dir}/${d.name}`) : d.name.endsWith('.json') ? [`${dir}/${d.name}`] : []).sort();
 async function verify() {
-  const file = argv[1] || die('verify <file>'); const ev = JSON.parse(readFileSync(file, 'utf8')); const fail = (m) => { console.log('FAIL: ' + m); process.exit(1); };
-  const { idOK, sigOK } = verifyEvent(ev); if (!idOK) fail('id does not match the event'); if (!sigOK) fail('signature invalid'); if (![KIND, DISPUTE_KIND].includes(ev.kind)) fail(`kind is ${ev.kind}, not ${KIND} or ${DISPUTE_KIND}`);
-  let st; try { st = JSON.parse(ev.content); } catch { fail('content is not JSON'); } if (jcs(st) !== ev.content) fail('content is not canonical (RFC 8785)');
-  try { checkRules(st); } catch (e) { fail(e.message); } const dis = tagsAgree(ev, st); if (dis) fail(dis);
-  if ((st['@type'] === 'Dispute') !== (ev.kind === DISPUTE_KIND)) fail('a Dispute is kind 3331 and an Attestation is kind 3332');
-  const s = st.subject, c = st.claim;
-  if (arg('--rpc')) { const rpc = makeRpc(arg('--rpc'), arg('--datadir')); let h; try { h = await rpc('getblockheader', s.blockHash); } catch { fail(`block ${s.blockHash} is not known to this node`); }
-    if (s.height !== undefined && h.height !== s.height) fail(`the block is at height ${h.height} on this node, not ${s.height}`); if (h.confirmations < 1) fail('the block is not on this node\'s best chain');
-    const g = await rpc('getblockhash', 0); if (s.genesis !== undefined && g !== s.genesis) fail(`genesis differs from this node's: ${g}`); console.log(`on chain: ${s.blockHash.slice(0, 16)}… at ${h.height}, ${h.confirmations} confirmations`); }
-  console.log(`ok: ${st['@type'] === 'Dispute' ? 'DISPUTE of ' + st.disputes.txoutsetHash + ' (' + st.disputes.attestations.length + ' attestations), this node got ' : ''}${s.network ?? '?'} ${s.height ?? '?'} ${s.txoutsetHash} ${c.method} by did:nostr:${ev.pubkey} (${leadingZeroBits(ev.pubkey)} bits; ${c.implementation ?? 'implementation not stated'}; ${c.chainstate}${c.computedAt ? '; computed ' + c.computedAt : ''})`);
+  const target = argv[1] || die('verify <file or folder>'); const rpc = arg('--rpc') ? makeRpc(arg('--rpc'), arg('--datadir')) : null;
+  if (!statSync(target).isDirectory()) {
+    const r = await checkEvent(JSON.parse(readFileSync(target, 'utf8')), rpc); if (!r.ok) { console.log('FAIL: ' + r.why); process.exit(1); }
+    if (r.chain) console.log(r.chain); console.log('ok: ' + r.line); return;
+  }
+  // a folder: every event under it (other JSON is skipped), grouped by snapshot; a group agrees when every attestation names one hash
+  const groups = new Map(); let failed = 0, seen = 0;
+  for (const f of eventFiles(target)) {
+    let ev; try { ev = JSON.parse(readFileSync(f, 'utf8')); } catch { continue; } if (![KIND, DISPUTE_KIND].includes(ev?.kind)) continue; seen++;
+    const r = await checkEvent(ev, rpc); const rel = f.slice(target.replace(/\/$/, '').length + 1);
+    if (!r.ok) { failed++; console.log(`FAIL ${rel}: ${r.why}`); continue; }
+    const s = r.st.subject, k = `${s.network ?? '?'} ${s.height ?? '?'} ${s.blockHash}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r);
+  }
+  let split = 0;
+  const order = [...groups.keys()].sort((a, b) => a.split(' ')[0].localeCompare(b.split(' ')[0]) || Number(a.split(' ')[1]) - Number(b.split(' ')[1]));
+  for (const k of order) {
+    const rs = groups.get(k), hashes = new Set(rs.filter((r) => r.st['@type'] === 'Attestation').map((r) => r.st.subject.txoutsetHash));
+    const disputes = rs.filter((r) => r.st['@type'] === 'Dispute').length, keys = new Set(rs.map((r) => r.ev.pubkey)).size, impls = new Set(rs.map((r) => r.st.claim.implementation ?? '?'));
+    const verdict = hashes.size > 1 ? 'DISAGREE' : disputes ? 'DISPUTED' : 'agree'; if (verdict !== 'agree') split++;
+    const [net, height] = k.split(' ');
+    console.log(`${net} ${height} · ${verdict} · ${rs.length} event${rs.length > 1 ? 's' : ''}, ${keys} key${keys > 1 ? 's' : ''}, ${impls.size} implementation${impls.size > 1 ? 's' : ''}${hashes.size === 1 ? ' · ' + [...hashes][0] : ''}${rs[0].chain ? ' · ' + rs[0].chain.replace(/^on chain: \S+ /, 'on chain ') : ''}`);
+    for (const r of rs) console.log(`  ${r.st['@type'] === 'Dispute' ? 'dispute' : r.st.subject.txoutsetHash.slice(0, 16) + '…'} ${r.st.claim.implementation ?? '?'} · ${r.st.claim.chainstate} · did:nostr:${r.ev.pubkey.slice(0, 12)}…${r.st.claim.computedAt ? ' · ' + r.st.claim.computedAt : ''}`);
+  }
+  console.log(`${seen} events: ${seen - failed} valid, ${failed} failed · ${groups.size} snapshots, ${split} not in agreement`);
+  if (failed || split) process.exit(1);
 }
 async function doPublish(ev, relays) { const rs = relays.length ? relays : DEFAULT_RELAYS; const res = await publish(ev, rs); for (const r of res) console.error(`${r.ok ? 'ok ' : 'no '} ${r.url}${r.ok ? '' : ' (' + r.why + ')'}`); console.log(`event ${ev.id} accepted by ${res.filter((r) => r.ok).length} of ${rs.length} relays`); }
 async function publishCmd() { const file = argv[1] || die('publish <file> [relays…]'); const ev = JSON.parse(readFileSync(file, 'utf8')); if (ev.kind !== KIND || !ev.sig) die('not a signed kind 3332 event'); const relays = argv.slice(2).filter((a) => a.startsWith('wss://')); await doPublish(ev, relays); }
