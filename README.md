@@ -65,6 +65,7 @@ MIT.
 
 ## Changes
 
+- 0.0.4: testnet5 (`tbtc5`); `attest`/`link --from <report.json>` attest from a node that is not Core (the file it wrote is hashed again here); `verify <folder>` checks every event under it, grouped by snapshot, and says whether they agree.
 - 0.0.3: `link` prints a prefilled sign-page link instead of signing, for signing in the browser with a NIP-07 extension and no key on disk.
 - 0.0.2: `verify` accepts a Dispute (kind 3331); a node still syncing may attest its exact tip; the snapshot file is hashed in a stream, so mainnet files past 2 GiB work.
 - 0.0.1: attest, verify, publish, key.
